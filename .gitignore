@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Backend Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Datasets
+datasets/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

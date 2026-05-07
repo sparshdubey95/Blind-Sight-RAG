@@ -1,0 +1,27 @@
+# =============================================================================
+# Blind-Sight RAG — Python Dependencies
+# =============================================================================
+# Hardware target: RTX 3050 (4GB VRAM), Windows 11
+# Strictly NO TensorFlow, NO Docker, NO local LLMs.
+
+# --- ML Core (PyTorch + DINOv2) ---
+torch>=2.1
+torchvision>=0.16
+transformers>=4.36
+faiss-cpu>=1.7.4
+numpy>=1.24
+Pillow>=10.0
+opencv-python>=4.8
+
+# --- FastAPI Backend ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+websockets>=12.0
+
+# --- Google Gemini API ---
+google-generativeai>=0.5
+
+# --- Utilities ---
+tqdm>=4.66
+python-dotenv>=1.0
