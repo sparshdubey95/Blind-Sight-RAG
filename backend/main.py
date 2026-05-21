@@ -10,9 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import cv2
 from dotenv import load_dotenv
@@ -20,7 +21,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSock
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from rag_engine import RAGEngine
+from backend.rag_engine import RAGEngine
 
 # Load environment variables
 load_dotenv()
@@ -36,8 +37,17 @@ rag_engine: Optional[RAGEngine] = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Load the RAG Engine at startup."""
+async def lifespan(app: FastAPI) -> None:
+    """
+    Application lifespan context manager.
+    
+    Initializes the RAG Engine at startup and ensures proper cleanup on shutdown.
+    If GEMINI_API_KEY is not set, displays a warning but allows the server to start
+    (analysis will fail until the key is provided).
+    
+    Args:
+        app (FastAPI): FastAPI application instance
+    """
     global rag_engine
     
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -57,7 +67,7 @@ async def lifespan(app: FastAPI):
         rag_engine.close()
 
 
-# ── FastAPI App ───────────────────────────────────────────────────────────────
+# ── FastAPI App ───────────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Blind-Sight RAG Backend",
@@ -73,10 +83,21 @@ app.add_middleware(
 )
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Endpoints ───────────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
+    """
+    Health check endpoint.
+    
+    Returns the current health status of the server and indicates whether
+    the RAG engine has been successfully initialized.
+    
+    Returns:
+        Dict[str, Any]: Status information with keys:
+            - status: str, "healthy" if server is running
+            - rag_engine_loaded: bool, whether RAG engine initialized successfully
+    """
     return {
         "status": "healthy",
         "rag_engine_loaded": rag_engine is not None,
@@ -84,8 +105,25 @@ async def health_check():
 
 
 @app.post("/api/upload")
-async def upload_video(file: UploadFile = File(...)):
-    """Accept an uploaded .mp4 video and return a session ID."""
+async def upload_video(file: UploadFile = File(...)) -> JSONResponse:
+    """
+    Upload a video file for analysis.
+    
+    Accepts MP4, MOV, or AVI video files and stores them for processing.
+    Generates a unique session ID for tracking the upload.
+    
+    Args:
+        file (UploadFile): Video file to upload (must be .mp4, .mov, or .avi)
+        
+    Returns:
+        JSONResponse: Response containing:
+            - session_id: str, unique identifier for this upload session
+            - filename: str, stored filename (session_id + original name)
+            - message: str, confirmation message
+            
+    Raises:
+        HTTPException: 400 if file is not a supported video format
+    """
     if not file.filename.endswith((".mp4", ".mov", ".avi")):
         raise HTTPException(400, "Only video files are supported")
         
@@ -104,91 +142,120 @@ async def upload_video(file: UploadFile = File(...)):
 
 
 @app.get("/api/frame/{filename}/{frame_idx}")
-async def get_frame(filename: str, frame_idx: int):
+async def get_frame(filename: str, frame_idx: int) -> Dict[str, str]:
     """
-    Utility endpoint: frontend can fetch a specific frame as an image
-    if it wants to display the exact frame being analyzed.
+    Retrieve a specific frame from an uploaded video (placeholder).
+    
+    This endpoint provides a utility to fetch individual frames if the frontend
+    needs to display or verify specific frames being analyzed. Currently returns
+    a placeholder response pending implementation.
+    
+    Args:
+        filename (str): Name of the uploaded video file
+        frame_idx (int): Index of the frame to retrieve
+        
+    Returns:
+        Dict[str, str]: Placeholder response
+        
+    Raises:
+        HTTPException: 404 if video file is not found
     """
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(404, "Video not found")
         
-    # We could implement frame extraction here, but for now we'll rely on the 
-    # frontend's <video> player to stay in sync.
-    # This is a placeholder if needed later.
     return {"status": "not_implemented"}
 
 
 @app.websocket("/ws/analyze/{filename}")
-async def websocket_analyze(websocket: WebSocket, filename: str):
+async def websocket_analyze(websocket: WebSocket, filename: str) -> None:
     """
-    WebSocket endpoint for real-time video analysis.
-    Processes the video at 1 FPS and streams results back to the client.
+    WebSocket endpoint for real-time video analysis streaming.
+    
+    Establishes a persistent WebSocket connection to stream real-time threat
+    analysis results as the video plays. Stays synchronized with frontend playback
+    by tracking elapsed time and analyzing frames accordingly.
+    
+    Flow:
+        1. Accept WebSocket connection
+        2. Validate video file and RAG engine availability
+        3. Extract video properties (FPS, duration, frame count)
+        4. For each elapsed time:
+           - Seek to the corresponding frame
+           - Analyze frame using RAG Engine
+           - Send analysis result to client
+        5. Send completion message when done
+    
+    Args:
+        websocket (WebSocket): WebSocket connection from client
+        filename (str): Name of the uploaded video file to analyze
+        
+    Message Format (sent to client):
+        Analysis result: {
+            "type": "analysis_result",
+            "threat_level": int,
+            "warning": str,
+            "hazards_detected": [str],
+            "timestamp": float,
+            "processing_time_ms": int
+        }
+        
+        Completion: {"type": "complete"}
+        
+        Error: {"error": str}
     """
     await websocket.accept()
     
     file_path = UPLOAD_DIR / filename
     if not file_path.exists() or not rag_engine:
-        await websocket.send_json({"error": "File not found or engine not ready"})
+        await websocket.send_json({"error": "Backend Engine is not initialized or file missing."})
         await websocket.close()
         return
 
-    print(f"[WebSocket] Starting analysis for {filename}")
-    
+    print(f"[WebSocket] Starting LIVE analysis for {filename}")
     cap = cv2.VideoCapture(str(file_path))
+    
     if not cap.isOpened():
         await websocket.send_json({"error": "Failed to open video file"})
         await websocket.close()
         return
 
-    # Video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     duration = total_frames / fps if fps > 0 else 0
     
-    print(f"  Video: {fps:.1f} FPS, {total_frames} frames, {duration:.1f}s")
-    
-    # We want to process roughly 1 frame per second
-    frame_interval = max(1, int(fps))
-    
     try:
-        frame_idx = 0
+        start_time = time.time()
+        
         while True:
+            # Calculate how much time has passed since video started playing
+            elapsed_time = time.time() - start_time
+            
+            if elapsed_time > duration:
+                break
+                
+            # Seek video to the exact elapsed time frame
+            cap.set(cv2.CAP_PROP_POS_MSEC, elapsed_time * 1000)
             ret, frame = cap.read()
             if not ret:
                 break
                 
-            # Process 1 frame per second
-            if frame_idx % frame_interval == 0:
-                timestamp = frame_idx / fps
-                
-                # Offload heavy ML to a separate thread to keep WS responsive
-                result = await asyncio.to_thread(
-                    rag_engine.analyze_frame, frame, timestamp
-                )
-                
-                result["frame_index"] = frame_idx
-                result["type"] = "analysis_result"
-                
-                # Send to frontend
-                await websocket.send_json(result)
-                
-                # Small delay to allow WS to flush and prevent overwhelming client
-                await asyncio.sleep(0.05)
-                
-            frame_idx += 1
+            # Process the frame in a separate thread
+            result = await asyncio.to_thread(
+                rag_engine.analyze_frame, frame, elapsed_time
+            )
             
-        # EOF
+            result["type"] = "analysis_result"
+            await websocket.send_json(result)
+            
+            # Brief pause to prevent flooding WebSocket
+            await asyncio.sleep(0.1)
+            
         await websocket.send_json({"type": "complete"})
         
     except WebSocketDisconnect:
-        print(f"[WebSocket] Client disconnected from {filename}")
+        print(f"[WebSocket] Client disconnected")
     except Exception as e:
-        print(f"[WebSocket] Error during analysis: {e}")
-        try:
-            await websocket.send_json({"error": str(e)})
-        except:
-            pass
+        print(f"[WebSocket] Error: {e}")
     finally:
         cap.release()
-        print(f"[WebSocket] Analysis finished for {filename}")
